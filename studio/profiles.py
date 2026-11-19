@@ -149,7 +149,11 @@ def _twitch_live(login: str, off: dict) -> dict:
     r = httpx.post("https://gql.twitch.tv/gql", json={"query": q, "variables": {"l": login}},
                    headers={"Client-ID": _TWITCH_WEB, **UA}, timeout=8)
     r.raise_for_status()
-    user = ((r.json() or {}).get("data") or {}).get("user")
+    payload = r.json() or {}
+    if payload.get("errors"):
+        # API failure is not evidence the channel is offline: use yt-dlp fallback.
+        raise RuntimeError("Twitch did not return live status")
+    user = (payload.get("data") or {}).get("user")
     if user is None:
         return off                                   # no such channel
     st = user.get("stream")
@@ -200,6 +204,11 @@ def _no_date(title: str) -> str:
     return re.sub(r"\s*\(live\)\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}$|\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "", title or "").strip()
 
 
+def _is_live(info: dict) -> bool:
+    """Extractors may supply either field; upcoming streams must not be called live."""
+    return info.get("live_status") == "is_live" or info.get("is_live") is True
+
+
 def live_now(platform: str, url: str) -> dict:
     """{live, viewers, title, started (unix time), embed}. `embed` is what the platform's own player needs:
     the Twitch login, the YouTube video id or the Kick channel name."""
@@ -208,32 +217,49 @@ def live_now(platform: str, url: str) -> dict:
     path = urlparse(url).path.strip("/").split("/")
     if platform == "Kick":
         slug = path[0]
-        _, raw = _get(f"https://kick.com/api/v2/channels/{slug}", "application/json")
-        ls = json.loads(raw).get("livestream")
-        if not ls:
-            return off
-        started = None
         try:
-            import calendar
-            started = calendar.timegm(time.strptime(ls.get("start_time") or ls.get("created_at"), "%Y-%m-%d %H:%M:%S"))
+            _, raw = _get(f"https://kick.com/api/v2/channels/{slug}", "application/json")
+            ls = json.loads(raw).get("livestream")
+            if not ls:
+                return off
+            started = None
+            try:
+                import calendar
+                started = calendar.timegm(time.strptime(ls.get("start_time") or ls.get("created_at"), "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                pass
+            return {"live": True, "viewers": ls.get("viewer_count"), "title": ls.get("session_title") or "", "started": started, "embed": slug}
         except Exception:
-            pass
-        return {"live": True, "viewers": ls.get("viewer_count"), "title": ls.get("session_title") or "", "started": started, "embed": slug}
+            # Kick's public JSON endpoint may reject datacenter IPs.
+            info = _ydl_info(url)
+            if not _is_live(info):
+                return off
+            return {"live": True, "viewers": info.get("concurrent_view_count"),
+                    "title": _no_date(info.get("title")), "started": info.get("timestamp"), "embed": slug}
     if platform == "YouTube":
         base = re.sub(r"/(live|videos|streams|featured)$", "", url)
-        _, raw = _get(base + "/live")
-        html = raw.decode("utf-8", "replace")
-        if '"isLiveNow":true' not in html:
-            return off
+        html = ""
+        try:
+            _, raw = _get(base + "/live")
+            html = raw.decode("utf-8", "replace")
+        except Exception:
+            pass
+        # YouTube sometimes returns a watch page without the exact JSON marker.
+        # Do not trust a missing marker as an offline result.
+        page_live = bool(re.search(r'"isLiveNow"\s*:\s*true\b', html))
         vid = (re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html) or [None, ""])[1]
         out = {"live": True, "viewers": None, "title": _meta(html, "og:title"), "started": None, "embed": vid}
         try:
             i = _ydl_info(base + "/live")
-            out.update(viewers=i.get("concurrent_view_count"), title=_no_date(i.get("title")) or out["title"],
-                       started=i.get("release_timestamp") or i.get("timestamp"), embed=i.get("id") or vid)
+            if _is_live(i):
+                out.update(viewers=i.get("concurrent_view_count"), title=_no_date(i.get("title")) or out["title"],
+                           started=i.get("release_timestamp") or i.get("timestamp"), embed=i.get("id") or vid)
+                return out
         except Exception:
-            pass
-        return out
+            if not page_live:
+                # If both ways fail, report unknown instead of incorrectly saying offline.
+                raise
+        return out if page_live else off
     if platform == "Twitch":
         login = (path[0] if path else "").lower()
         if re.fullmatch(r"\w{2,40}", login):
@@ -245,7 +271,7 @@ def live_now(platform: str, url: str) -> dict:
             i = _ydl_info(url)
         except Exception:
             return off
-        if not i.get("is_live"):
+        if not _is_live(i):
             return off
         title = _no_date(i.get("title"))
         if (not title or title.lower() == (i.get("uploader_id") or "").lower()) and i.get("description"):
@@ -271,9 +297,10 @@ def live_shared(platform: str, url: str) -> dict:
         try:
             out = live_now(platform, url)
         except Exception:
-            # the platform hiccuped, or the channel does not exist: keep the last answer (or "offline") for a
-            # short while, so one bad channel is not asked about again for every person who follows it
-            out = got[1] if got else {"live": False, "viewers": None, "title": "", "started": None, "embed": ""}
+            # A failed lookup is NOT an offline result. Let the UI show "status
+            # unavailable"; background auto-record will retry on its next pass.
+            out = {"live": False, "viewers": None, "title": "",
+                   "started": None, "embed": "", "check_error": True}
             _live[key] = (time.time() - LIVE_SHARED_FOR + 45, out)
             return dict(out)
         _live[key] = (time.time(), out)
