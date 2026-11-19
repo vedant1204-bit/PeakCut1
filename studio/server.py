@@ -1188,6 +1188,10 @@ def new_creator(body: dict = Body(...)):
         raise HTTPException(400, str(e))
     if c.get("channels"):
         profiles.refresh(c["id"], force=True)
+    if c.get("auto_watch") and c.get("channel"):
+        # Creating a creator with auto-record already selected must check now,
+        # not wait until the next two-minute polling round.
+        live.check_now(c["id"])
     return c
 
 

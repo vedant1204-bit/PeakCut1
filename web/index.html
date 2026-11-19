@@ -1122,6 +1122,8 @@ function statusBadge(c) {
   const on = liveOn(c);
   if (on.length) { const [k, p] = on[0]; return `<span class="sbadge live"><i></i>Live on ${PLAT[k].name}${p.viewers ? " · " + fmtK(p.viewers) + " watching" : ""}</span>`; }
   if (!Object.keys(c.channels || {}).length) return `<span class="sbadge">No channel yet</span>`;
+  if (Object.values(c.profiles || {}).some(p => p.check_error))
+    return `<span class="sbadge">Live status unavailable · retrying${c.auto_watch ? " · auto-record enabled" : ""}</span>`;
   return `<span class="sbadge"><i></i>Offline${c.auto_watch ? " · records when live" : ""}</span>`;
 }
 const cav = c => { const r = c.live_job || liveOn(c).length ? " ring" : "";

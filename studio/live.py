@@ -52,7 +52,7 @@ def normalize(url: str) -> str:
     url = url.strip()
     if not re.match(r"^https?://", url):
         url = "https://" + url
-    m = re.match(r"^(https?://(?:www\.)?youtube\.com/(?:@[^/?#]+|channel/[^/?#]+|c/[^/?#]+))/?(?:[?#].*)?$", url)
+    m = re.match(r"^(https?://(?:www\.)?youtube\.com/(?:@[^/?#]+|channel/[^/?#]+|c/[^/?#]+))(?:/(?:live|streams|videos|featured))?/?(?:[?#].*)?$", url)
     return m.group(1) + "/live" if m else url
 
 
@@ -77,7 +77,7 @@ def resolve(url: str) -> dict:
         if media.note_refusal(url, e):
             raise NotLive(media.YT_BLOCKED) from e
         raise NotLive(str(e)[-200:]) from e
-    if not info or not info.get("is_live"):
+    if not info or not (info.get("is_live") is True or info.get("live_status") == "is_live"):
         raise NotLive("This channel is not live right now.")
     fmts = info.get("requested_formats") or [info]
     title = info.get("title") or ""
