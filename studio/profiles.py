@@ -270,7 +270,9 @@ def live_now(platform: str, url: str) -> dict:
         try:
             i = _ydl_info(url)
         except Exception:
-            return off
+            # Both Twitch's API and the extractor failed. This is unknown,
+            # not proof that the streamer is offline.
+            raise
         if not _is_live(i):
             return off
         title = _no_date(i.get("title"))
