@@ -1831,7 +1831,7 @@ function channelRows(c) {
     const ok = pr && pr.channel === url;
     return `<div class="chan">${platLogo(k)}${ok && pr.pic ? `<img class="pic" src="${avatarUrl(c, k)}" alt="">` : ""}
       <div class="who"><b>${esc(ok && pr.name ? pr.name : url)}</b><span>${esc([PLAT[k].name, ok ? pr.followers : "Looking it up…"].filter(Boolean).join(" · "))}</span></div>
-      ${ok && pr.live_at ? (pr.live ? `<span class="sbadge live"><i></i>Live${pr.viewers ? " · " + fmtK(pr.viewers) : ""}</span>` : `<span class="sbadge">Offline</span>`) : ""}
+      ${ok && pr.live_at ? (pr.live ? `<span class="sbadge live"><i></i>Live${pr.viewers ? " · " + fmtK(pr.viewers) : ""}</span>` : pr.check_error ? `<span class="sbadge">Status unavailable · retrying</span>` : `<span class="sbadge">Offline</span>`) : ""}
       ${many ? `<label class="main" title="Start recording uses this channel unless another one is live"><input type="radio" name="mainch" data-act="chmain" data-p="${k}" ${c.channel === url ? "checked" : ""}>Record from</label>` : ""}
       <button class="btn sm icon ghost" data-act="chdel" data-p="${k}" title="Remove" aria-label="Remove ${PLAT[k].name} channel">${ic("x")}</button></div>`;
   }).join("");

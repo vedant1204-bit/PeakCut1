@@ -5,7 +5,7 @@ Run with: python -m unittest tests.test_live_detection
 import unittest
 from unittest.mock import patch
 
-from studio import profiles
+from studio import profiles, live
 from studio.live import normalize
 
 
@@ -49,6 +49,41 @@ class LiveDetectionTests(unittest.TestCase):
             result = profiles.live_now("Kick", "https://kick.com/example")
         self.assertTrue(result["live"])
         self.assertEqual(result["embed"], "example")
+
+    def test_twitch_failed_apis_are_unknown_not_offline(self):
+        profiles._live.clear()
+        with patch.object(profiles, "_twitch_live", side_effect=OSError("blocked")), \
+             patch.object(profiles, "_ydl_info", side_effect=OSError("blocked")):
+            result = profiles.live_shared("Twitch", "https://www.twitch.tv/example")
+        self.assertTrue(result.get("check_error"))
+
+    def test_auto_record_tries_resolving_uncertain_stream(self):
+        creator = {"id": "example", "name": "Example", "channel": "https://www.twitch.tv/example",
+                   "channels": {"twitch": "https://www.twitch.tv/example"}}
+        with patch.object(live, "active_for", return_value=None), \
+             patch.object(live, "active_mine", return_value=[]), \
+             patch.object(live, "active", return_value=[]), \
+             patch.object(profiles, "live_shared", return_value={"live": False, "check_error": True}), \
+             patch.object(live, "resolve", return_value={"urls": ["https://example.com/live"]}) as resolve, \
+             patch.object(live, "start_session") as start_session, \
+             patch.object(live.creators, "log"), \
+             patch.object(live.alerts, "notify"):
+            live._watch_one(creator)
+        resolve.assert_called_once()
+        start_session.assert_called_once_with(creator, creator["channel"])
+
+    def test_offline_creator_does_not_start(self):
+        creator = {"id": "example", "name": "Example", "channel": "https://www.twitch.tv/example",
+                   "channels": {"twitch": "https://www.twitch.tv/example"}}
+        with patch.object(live, "active_for", return_value=None), \
+             patch.object(live, "active_mine", return_value=[]), \
+             patch.object(live, "active", return_value=[]), \
+             patch.object(profiles, "live_shared", return_value={"live": False}), \
+             patch.object(live, "resolve") as resolve, \
+             patch.object(live, "start_session") as start_session:
+            live._watch_one(creator)
+        resolve.assert_not_called()
+        start_session.assert_not_called()
 
 
 if __name__ == "__main__":

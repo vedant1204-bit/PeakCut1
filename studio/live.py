@@ -926,16 +926,21 @@ def _watch_one(c):
         # the chosen channel first, then their other platforms
         urls = [c["channel"]] + [u for u in c.get("channels", {}).values() if u != c["channel"]]
         for url in urls:
-            # one shared "are they live?" answer per channel, however many people follow it
-            if not profiles.live_shared(profiles.platform_of(url), url).get("live"):
+            # A failed status lookup is not proof a creator is offline. Try the
+            # actual stream extractor before skipping auto-record. This happens
+            # only for uncertain results, not every genuinely offline creator.
+            status = profiles.live_shared(profiles.platform_of(url), url)
+            if not status.get("live") and not status.get("check_error"):
                 continue
-            if media.is_youtube(url):
-                # check YouTube will hand over the stream before making a recording that could only fail
-                if media.youtube_paused():
-                    continue
+            if media.is_youtube(url) and media.youtube_paused():
+                creators.log(c["id"], "Auto-record could not check YouTube: this server is temporarily blocked.")
+                continue
+            if status.get("check_error") or media.is_youtube(url):
                 try:
                     resolve(normalize(url))
-                except NotLive:
+                except NotLive as e:
+                    if status.get("check_error"):
+                        creators.log(c["id"], f"Auto-record could not access {creators.platform_key(url).title()} stream: {media_safe(e)}")
                     continue
             start_session(c, url)
             where = creators.platform_key(url).title()
