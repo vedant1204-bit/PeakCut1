@@ -774,6 +774,11 @@ def create_from_file(file: UploadFile = File(...), options: str = Form("{}"), cr
     finally:
         tmp.unlink(missing_ok=True)
     job["source"]["path"] = str(dest)
+    # Upload a durable original before processing. Keep the local working copy
+    # until clip rendering is finished; the worker will then discard it.
+    if cloud.enabled() and not cloud.store(dest):
+        jobs.delete(job["id"])
+        raise HTTPException(503, "Could not save this video to cloud storage. Check the S3 settings and retry.")
     jobs.enqueue(job)
     return jobs.public(job)
 
@@ -916,6 +921,9 @@ def upload_finish(upid: str):
         shutil.rmtree(d, ignore_errors=True)
     _disk.pop(ctx.uid(), None)
     job["source"]["path"] = str(dest)
+    if cloud.enabled() and not cloud.store(dest):
+        jobs.delete(job["id"])
+        raise HTTPException(503, "Could not save this video to cloud storage. Check the S3 settings and retry.")
     jobs.enqueue(job)
     return jobs.public(job)
 

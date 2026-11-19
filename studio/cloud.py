@@ -7,6 +7,8 @@ deleted, so the disk only holds what is being worked on. Without these settings 
 Keys mirror the path inside the data folder, so a clip at <data>/users/u1/jobs/j1/clips/clip01.mp4 is stored under
 users/u1/jobs/j1/clips/clip01.mp4."""
 import logging
+import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -42,20 +44,37 @@ def key_for(path) -> str:
     return Path(path).resolve().relative_to(config.DATA_DIR.resolve()).as_posix()
 
 
-def push(*paths) -> None:
-    """Upload each file that exists, then delete the local copy. If an upload fails the local file is kept."""
-    if not enabled():
-        return
-    for p in paths:
-        p = Path(p)
-        if not p.is_file():
-            continue
-        try:
-            _client().upload_file(str(p), _bucket(), key_for(p),
-                                  ExtraArgs={"ContentType": "video/mp4" if p.suffix == ".mp4" else "image/jpeg"})
+def store(path, delete_local: bool = False) -> bool:
+    """Back up a file to S3. Never remove local data unless upload and size verification succeed.
+
+    Returns False when S3 is disabled or fails. Live recording uses this without deletion while
+    a clip may still be reading the segment.
+    """
+    p = Path(path)
+    if not enabled() or not p.is_file():
+        return False
+    types = {".mp4": "video/mp4", ".ts": "video/mp2t", ".jpg": "image/jpeg",
+             ".jpeg": "image/jpeg", ".mov": "video/quicktime", ".webm": "video/webm"}
+    try:
+        size = p.stat().st_size
+        _client().upload_file(str(p), _bucket(), key_for(p),
+                              ExtraArgs={"ContentType": types.get(p.suffix.lower(), "application/octet-stream")})
+        remote = _client().head_object(Bucket=_bucket(), Key=key_for(p))
+        if remote.get("ContentLength") != size:
+            raise IOError("Cloud upload size did not match the original")
+        if delete_local:
             p.unlink(missing_ok=True)
-        except Exception as e:  # noqa: BLE001
-            log.warning("could not upload %s, keeping it on disk: %s", p.name, e)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not upload %s, keeping it on disk: %s", p.name, e)
+        return False
+
+
+def push(*paths) -> None:
+    """Upload finished clips and delete local copies only when safe."""
+    for p in paths:
+        if Path(p).is_file():
+            store(p, delete_local=True)
 
 
 def exists_remote(path) -> bool:
@@ -84,14 +103,17 @@ def fetch(path) -> bool:
     if p.is_file() or not enabled():
         return False
     try:
-        tmp = p.with_name(p.name + ".part")
         p.parent.mkdir(parents=True, exist_ok=True)
-        _client().download_file(_bucket(), key_for(p), str(tmp))
-        tmp.replace(p)
+        fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=p.parent)
+        os.close(fd)
+        try:
+            _client().download_file(_bucket(), key_for(p), tmp)
+            Path(tmp).replace(p)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
         return True
     except Exception as e:  # noqa: BLE001
         log.warning("could not download %s: %s", p.name, e)
-        Path(str(p) + ".part").unlink(missing_ok=True)
         return False
 
 

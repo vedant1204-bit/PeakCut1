@@ -216,7 +216,7 @@ def _load_file(f: Path, uid: str):
         job.update(status="queued", stage="Picking up where it stopped", error=None, resume=True)
     if job.get("status") == "live":
         job.update(status="done", stage="Recording paused by a server update", was_live=True)
-    buffered = job.get("kind") == "live" and any((f.parent / "buffer").glob("*.ts"))
+    buffered = job.get("kind") == "live" and any((f.parent / "buffer").glob("p*.csv"))
     for c in job.get("clips", []):
         c.setdefault("captions", job["options"]["captions"])
         if c.get("src"):
@@ -380,6 +380,9 @@ def render_one(job, clip, words):
             _piece_again(job, clip)
         off = clip.get("src_offset", 0.0)
         src = Path(clip["src"]) if clip.get("src") else Path(job["source_path"])
+        # Originals can live only in B2 after the initial processing run.
+        if not src.is_file() and not cloud.fetch(src):
+            raise RuntimeError("The source video is missing and could not be retrieved from cloud storage.")
         if not clip.get("src"):
             clip["end"] = min(clip["end"], job["duration"])
         local = dict(clip, start=clip["start"] - off, end=clip["end"] - off, hook=roman.to_roman(clip.get("hook") or ""))
@@ -599,6 +602,8 @@ def _run_job(job):
         audio_file = media.download_audio(src["url"], d, lambda p: _set(job, progress=0.03 + 0.1 * p))
     else:
         pieces, audio_file = False, Path(src["path"])
+        if not audio_file.is_file() and not cloud.fetch(audio_file):
+            raise RuntimeError("Uploaded video is unavailable in local or cloud storage.")
         info = media.probe(audio_file)
         if info["duration"] > config.MAX_VIDEO_HOURS * 3600:
             raise RuntimeError(f"That video is longer than {config.MAX_VIDEO_HOURS:g} hours, which is the limit.")
@@ -782,6 +787,9 @@ def _run_job(job):
     ahead.shutdown(wait=False)
     fetch.shutdown(wait=False)
     del audio
+    # Clip generation has finished. Keep the original remotely, free local space.
+    if src["type"] == "file":
+        cloud.drop_local(Path(src["path"]))
     clips = job["clips"]
     job["ai"] = {"model": model, "tokens": tokens, "log": notes[-5:],
                  "note": "The AI was unavailable, so clips were picked by loudness only." if clips and not model else ""}
